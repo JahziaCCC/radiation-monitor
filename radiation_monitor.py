@@ -41,7 +41,7 @@ def google_news_rss_url(q: str) -> str:
     return f"https://news.google.com/rss/search?q={qq}&hl=en&gl=US&ceid=US:en"
 
 # =========================
-# كلمات عامة للرصد
+# كلمات عامة للرصد (لدخول الخبر للفحص)
 # =========================
 KEYWORDS = [
     "radiation", "radioactive", "radiological", "nuclear",
@@ -55,11 +55,22 @@ KEYWORDS = [
 ]
 
 # =========================
-# استبعاد الضجيج
+# استبعاد الضجيج (عام + تاريخي/علمي/وثائقي)
 # =========================
 NOISE_BLOCK = [
+    # ضجيج عام
     "stock", "shares", "market", "crypto", "bitcoin",
     "movie", "game", "music", "festival", "nuclear family",
+
+    # ---- أخبار تاريخية/علمية/غير تشغيلية (مشكلة تشيرنوبيل والفطريات) ----
+    "chernobyl", "fukushima anniversary", "anniversary", "history of",
+    "documentary", "mysterious fungus", "fungus", "microorganism",
+    "scientists discovered", "study finds", "researchers found", "research",
+    "biology", "museum", "exhibit", "40 years after", "years after",
+    "worst atomic disaster", "atomic disaster in history",
+    # عربي
+    "تشيرنوبيل", "فوكوشيما", "ذكرى", "الذكرى", "وثائقي", "فطر", "فطريات",
+    "اكتشف العلماء", "دراسة", "بحث", "أحياء", "متحف", "بعد مرور", "بعد مرور ما يقرب",
 ]
 
 # =========================
@@ -78,17 +89,18 @@ REGULATORY_WORDS = [
 ]
 
 # =========================
-# دليل إشعاعي صريح
+# دليل إشعاعي صريح (Evidence)
 # =========================
 RADIATION_EVIDENCE = [
-    "radiation", "radioactive", "radiological",
     "radioactive release", "radiation release",
     "contamination", "dose", "dose rate", "sievert", "becquerel",
     "tritium", "iodine", "cesium", "caesium",
     "ines",
     # عربي
-    "إشعاع", "مواد مشعة", "تلوث إشعاعي", "جرعة", "معدل الجرعة",
-    "سيفرت", "بيكريل", "تريتيوم", "يود", "سيزيوم", "ines",
+    "إطلاق مواد مشعة", "انبعاث إشعاعي", "تلوث إشعاعي",
+    "جرعة", "معدل الجرعة", "سيفرت", "بيكريل",
+    "تريتيوم", "يود", "سيزيوم", "ines",
+    # لاحظ: تركنا "radiation/radioactive" العامة خارج evidence عشان تقل false positives
 ]
 
 # =========================
@@ -117,13 +129,28 @@ SEVERITY_MED = [
 
 EVAC_WORDS = ["evacuat", "shelter", "إخلاء", "إيواء"]
 
+# قرب منطقي (ذكر دول/مواقع قريبة من المملكة)
 NEAR_KSA_HINTS = [
     "saudi", "riyadh", "jeddah", "red sea", "gulf", "arabian gulf",
     "iran", "iraq", "kuwait", "qatar", "bahrain", "uae", "oman", "yemen",
     "jordan", "syria", "lebanon", "turkey", "egypt",
+    # عربي
     "السعودية", "الرياض", "جدة", "البحر الأحمر", "الخليج", "الخليج العربي",
     "إيران", "العراق", "الكويت", "قطر", "البحرين", "الإمارات", "عُمان", "اليمن",
     "الأردن", "سوريا", "لبنان", "تركيا", "مصر",
+]
+
+# =========================
+# "حدث حالي/تشغيلي" (لمنع القصص القديمة/التثقيفية من Google News)
+# يكفي وجود واحدة من هذه الكلمات + Evidence حتى نرسل.
+# =========================
+CURRENT_EVENT_HINTS = [
+    "today", "yesterday", "hours", "latest", "breaking", "reported", "incident",
+    "emergency", "evacuat", "shelter", "leak", "release", "contamination",
+    "shutdown", "scram", "alert", "warning",
+    # عربي
+    "اليوم", "أمس", "خلال", "عاجل", "تم الإبلاغ", "حادث", "طوارئ",
+    "إخلاء", "تسرب", "إطلاق", "تلوث", "تحذير", "إنذار",
 ]
 
 MAX_AGE_HOURS = 72
@@ -191,6 +218,10 @@ def has_radiation_evidence(title: str, summary: str) -> bool:
     blob = (title + " " + summary).lower()
     return any(w.lower() in blob for w in RADIATION_EVIDENCE)
 
+def has_current_event_hint(title: str, summary: str) -> bool:
+    blob = (title + " " + summary).lower()
+    return any(w.lower() in blob for w in CURRENT_EVENT_HINTS)
+
 def is_relevant(title: str, summary: str) -> bool:
     blob = (title + " " + summary).lower()
     if is_noise(title, summary):
@@ -198,13 +229,6 @@ def is_relevant(title: str, summary: str) -> bool:
     return any(k.lower() in blob for k in KEYWORDS)
 
 def classify_event(title: str, summary: str, source: str) -> str:
-    """
-    تصنيف نوع الخبر:
-    - تنظيمي: عادة NRC/IAEA بيانات/جلسات/تعليقات/إجراءات
-    - حادث مؤكد: دليل إشعاعي + مصدر رسمي + شدة عالية
-    - حادث محتمل: دليل إشعاعي + (مصدر رسمي أو شدة متوسطة)
-    - ضجيج سياسي/أمني: إخلاء بدون دليل إشعاعي
-    """
     blob = (title + " " + summary).lower()
     official = source.startswith("IAEA") or source.startswith("NRC")
     evidence = has_radiation_evidence(title, summary)
@@ -232,10 +256,7 @@ def smart_assess(title: str, summary: str, source: str) -> dict:
     evac = any(w in blob for w in EVAC_WORDS)
     regulatory = is_regulatory(title, summary)
 
-    reasons = []
-    sev = 0
-
-    # تنظيمي: نخفضه تلقائياً (حتى لو فيه nuclear)
+    # خبر تنظيمي بدون دليل إشعاعي: منخفض جداً
     if regulatory and not evidence:
         return {
             "impact": "غير متوقع",
@@ -245,14 +266,17 @@ def smart_assess(title: str, summary: str, source: str) -> dict:
             "reasons": ["خبر تنظيمي/إداري — ليس حادث إشعاعي"]
         }
 
+    reasons = []
+    sev = 0
+
     if any(w in blob for w in SEVERITY_HIGH):
         sev = 2
-        reasons.append("إشارات شدة عالية (انفجار/حريق/INES/مؤشر إشعاعي)")
+        reasons.append("إشارات شدة عالية (انفجار/حريق/INES/مؤشر جرعات)")
     elif any(w in blob for w in SEVERITY_MED):
         sev = 1
         reasons.append("إشارات شدة متوسطة (تسرب/إيقاف/تحقيق)")
 
-    # الإخلاء: لا يكفي وحده
+    # الإخلاء وحده لا يكفي
     if evac and not evidence:
         reasons.append("ذكر إخلاء بدون دليل إشعاعي (قد يكون سياق سياسي/أمني)")
     elif evac and evidence:
@@ -267,16 +291,7 @@ def smart_assess(title: str, summary: str, source: str) -> dict:
     if official:
         reasons.append("مصدر رسمي")
 
-    # Google News بدون دليل إشعاعي: نخفضه جداً
-    if source == "Google News" and not evidence:
-        return {
-            "impact": "غير متوقع",
-            "readiness": "مراقبة فقط",
-            "score": 10,
-            "level": "🟢 منخفض",
-            "reasons": ["Google News بدون دليل إشعاعي صريح (تم تخفيض التقييم)"]
-        }
-
+    # Google News: بدون Evidence لا يُرسل أصلاً (لكن لو وصل هنا فمعناه Evidence موجود)
     # تقييم تشغيلي
     if sev == 0 and not near:
         impact, readiness, score, level = "غير متوقع", "مراقبة فقط", 15, "🟢 منخفض"
@@ -286,7 +301,7 @@ def smart_assess(title: str, summary: str, source: str) -> dict:
         impact, readiness, score, level = "منخفض", "متابعة", 40, "🟠 متوسط"
     elif sev == 1 and near:
         impact, readiness, score, level = "متوسط", "متابعة عاجلة", 60, "🔴 مرتفع"
-    else:  # sev == 2
+    else:
         impact = "مرتفع" if near else "متوسط"
         readiness = "تصعيد فوري" if near else "متابعة عاجلة"
         score = 80 if near else 65
@@ -339,11 +354,20 @@ def main():
             guid = e.get("id") or e.get("guid") or link or (title + label)
             gid = sha1(label + "::" + guid)
 
-            # Google News: لا نرسل بدون دليل إشعاعي
-            if label == "Google News" and not has_radiation_evidence(title, summary):
-                if gid not in seen:
-                    seen[gid] = now.strftime("%Y-%m-%d %H:%M:%S")
-                continue
+            # =========================
+            # تشديد Google News:
+            # - لازم Evidence صريح
+            # - ولازم Current Event hint (عشان ما يجيب قصص/علوم/تاريخ)
+            # =========================
+            if label == "Google News":
+                if not has_radiation_evidence(title, summary):
+                    if gid not in seen:
+                        seen[gid] = now.strftime("%Y-%m-%d %H:%M:%S")
+                    continue
+                if not has_current_event_hint(title, summary):
+                    if gid not in seen:
+                        seen[gid] = now.strftime("%Y-%m-%d %H:%M:%S")
+                    continue
 
             assess = smart_assess(title, summary, label)
             worst_score = max(worst_score, assess["score"])
@@ -370,13 +394,14 @@ def main():
                     "════════════════════\n"
                     f"📌 المصدر: {label}\n"
                     f"📰 {title}\n"
-                    f"🇸🇦 الترجمة: {title_ar}\n"
+                    f"🧾 {title_ar}\n\n"
                     f"🔗 {link}\n"
                 )
                 telegram_send(msg)
 
     state["seen"] = seen
 
+    # ===== الملخص التنفيذي =====
     if should_send_summary(state):
         if worst_score < 30:
             level, impact, readiness = "🟢 منخفض", "غير متوقع", "مراقبة فقط"
@@ -405,7 +430,7 @@ def main():
         else:
             top = new_events[:6]
             lines = "\n".join([
-                f"• {s}: {t} | نوع: {k} | ترجمة: {translate_to_ar(t)}"
+                f"• {s}: {t} | نوع: {k}\n  🧾 {translate_to_ar(t)}"
                 for s, t, _, __, k in top
             ])
             summary = (
